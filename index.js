@@ -6,8 +6,12 @@ const bcrypt = require("bcrypt");
 const bodyParser = require("body-parser");
 const { User, ChatRoom } = require("./models");
 const { authenticateToken } = require("./helpers");
+var cors = require("cors");
 
 const app = express();
+
+app.use(cors());
+
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
@@ -28,16 +32,17 @@ app.use((req, res, next) => {
 // User Registration
 app.post("/register", async (req, res) => {
   try {
+    console.log("======REGISTER=====");
     const { full_name, email, password } = req.body;
 
     if (!full_name) {
       return res
         .status(400)
-        .send({ message: "full_name is a required field." });
+        .json({ message: "full_name is a required field." });
     } else if (!email) {
-      return res.status(400).send({ message: "email is a required field." });
+      return res.status(400).json({ message: "email is a required field." });
     } else if (!password) {
-      return res.status(400).send({ message: "password is a required field." });
+      return res.status(400).json({ message: "password is a required field." });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -45,32 +50,46 @@ app.post("/register", async (req, res) => {
     if (isExist) {
       return res
         .status(400)
-        .send({ message: "User already exists with this email." });
+        .json({ message: "User already exists with this email." });
     }
     const user = new User({ full_name, email, password: hashedPassword });
     await user.save();
 
-    res.status(201).json({ message: "User registered successfully" });
-  } catch (error) {
+    const token = jwt.sign(
+      { userId: user._id },
+      "this-is-secret-key-sshhh-dont-share",
+      {
+        expiresIn: "4h",
+      }
+    );
+
     res
-      .status(500)
-      .send({ message: "Something went wrong registering the user." });
+      .status(201)
+      .json({ message: "User registered successfully", token, user });
+  } catch (error) {
+    res.status(500).send({
+      message: "Something went wrong registering the user.",
+      error: error.message,
+    });
   }
 });
 
 // User Login
 app.post("/login", async (req, res) => {
   try {
+    console.log("=============LOGIN===========");
     const { email, password } = req.body;
 
     const user = await User.findOne({ email });
 
-    const isBycrpt = bcrypt.compare(password, user.password);
-
-    if (!user || !isBycrpt) {
-      return res.status(401).json({ message: "Invalid credentials" });
+    if (!user) {
+      return res.status(401).json({ message: "This email doesn't exist" });
     }
+    const isBycrpt = await bcrypt.compare(password, user.password);
 
+    if (!isBycrpt) {
+      return res.status(401).json({ message: "Invalid Credentials" });
+    }
     const token = jwt.sign(
       { userId: user._id },
       "this-is-secret-key-sshhh-dont-share",
@@ -87,9 +106,10 @@ app.post("/login", async (req, res) => {
       user: data,
     });
   } catch (error) {
-    res
-      .status(500)
-      .send({ message: "Something went wrong registering the user." });
+    res.status(500).send({
+      message: "Something went wrong registering the user.",
+      error: error.message,
+    });
   }
 });
 
@@ -147,7 +167,7 @@ app.post("/joinChatRoom", async (req, res) => {
     if (chatRoom.users.includes(userId)) {
       return res
         .status(400)
-        .json({ error: "User is already in the chat room" });
+        .json({ message: "User is already in the chat room" });
     }
 
     // Add the userId to the chat room and save
