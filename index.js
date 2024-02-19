@@ -4,15 +4,17 @@ const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const bodyParser = require("body-parser");
-const { User, ChatRoom } = require("./models");
+const { User, ChatRoom, Message } = require("./models");
 const { authenticateToken } = require("./helpers");
 var cors = require("cors");
+const socketIO = require("socket.io");
 
 const app = express();
 
 app.use(cors());
 
 const server = http.createServer(app);
+const io = socketIO(server);
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI =
@@ -33,12 +35,10 @@ app.use((req, res, next) => {
 app.post("/register", async (req, res) => {
   try {
     console.log("======REGISTER=====");
-    const { full_name, email, password } = req.body;
+    const { name, email, password } = req.body;
 
-    if (!full_name) {
-      return res
-        .status(400)
-        .json({ message: "full_name is a required field." });
+    if (!name) {
+      return res.status(400).json({ message: "name is a required field." });
     } else if (!email) {
       return res.status(400).json({ message: "email is a required field." });
     } else if (!password) {
@@ -52,7 +52,7 @@ app.post("/register", async (req, res) => {
         .status(400)
         .json({ message: "User already exists with this email." });
     }
-    const user = new User({ full_name, email, password: hashedPassword });
+    const user = new User({ name, email, password: hashedPassword });
     await user.save();
 
     const token = jwt.sign(
@@ -114,9 +114,10 @@ app.post("/login", async (req, res) => {
 });
 
 // Create Chat Room
-app.post("/createChatRoom", async (req, res) => {
+app.post("/chatroom", async (req, res) => {
   try {
     const { name, author } = req.body;
+    console.log({ name, author });
 
     // Validate inputs
     if (!name || !author) {
@@ -134,18 +135,24 @@ app.post("/createChatRoom", async (req, res) => {
     }
 
     // Create a new chat room
-    const chatRoom = new ChatRoom({ name, author, users: [author] });
+    const chatRoom = new ChatRoom({
+      name: name,
+      author: author,
+      users: [author],
+    });
     await chatRoom.save();
 
-    res.status(201).json({ message: "Chat room created successfully" });
+    res
+      .status(201)
+      .json({ message: "Chat room created successfully", chatRoom });
   } catch (error) {
     console.error("Error creating chat room:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    res.status(500).json({ message: "Internal Server Error" });
   }
 });
 
 // Join Chat Room
-app.post("/joinChatRoom", async (req, res) => {
+app.post("/chatroom/join", async (req, res) => {
   try {
     const { roomId, userId } = req.body;
 
@@ -179,6 +186,70 @@ app.post("/joinChatRoom", async (req, res) => {
     console.error("Error joining chat room:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
+});
+
+// Socket.io Logic
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  socket.on("getChatRoomChat", async (chatId) => {
+    console.log("SENDING ALL CHATS OF", { chatId });
+    const chatRoom = await ChatRoom.findById(chatId).populate({
+      path: "messages",
+      populate: {
+        path: "user",
+      },
+    });
+    if (chatRoom) {
+      const messages = chatRoom.messages;
+      socket.emit(`receiveMessage-${chatId}`, { messages });
+    }
+  });
+
+  // Fetch and send messages in real-time
+  socket.on("sendMessage", async ({ chatId, userId, message }) => {
+    const updMsg = { ...message };
+    delete updMsg._id;
+
+    const msg = new Message(updMsg);
+
+    await msg.save();
+    const chatRoom = await ChatRoom.findById(chatId).populate({
+      path: "messages",
+      populate: {
+        path: "user",
+      },
+    });
+    if (chatRoom) {
+      chatRoom.messages.push(msg._id);
+      await chatRoom.save();
+      if (msg.user._id != userId)
+        socket.emit(`receiveNewMessage-${chatId}`, { msg: [msg] });
+    }
+  });
+
+  // User search for chat rooms
+  socket.on("searchChatRoom", async (searchQuery) => {
+    console.log({ searchQuery });
+    const chatRooms = await ChatRoom.find({
+      name: { $regex: searchQuery, $options: "i" },
+    });
+    socket.emit("searchResult", chatRooms);
+  });
+
+  socket.on("getUserChatRooms", async (_id) => {
+    const userChatRooms = await ChatRoom.find({ users: [_id] });
+    socket.emit("userChatRooms", userChatRooms);
+  });
+
+  socket.on("getAllChatRooms", async () => {
+    const userChatRooms = await ChatRoom.find();
+    socket.emit("allChatRooms", userChatRooms);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected:", socket.id);
+  });
 });
 
 server.listen(PORT, () => {
